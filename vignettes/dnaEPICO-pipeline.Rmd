@@ -1169,10 +1169,11 @@ make clean MODEL=model1
 make clean_models
 ```
 
-`clean` removes the selected analysis output directories; `clean_models`
-removes them for every analysis listed in `MODELS`. Cleanup removes the
-corresponding directories under `data`, `rData`, `reports`, `logs`, `figures`,
-and `results`, and removes empty output roots.
+`clean` removes the selected analysis outputs under `data`, `rData`,
+`reports`, `logs`, `figures`, and `results`. It skips missing directories,
+including stages that have yet to run, and removes output roots left empty
+by cleanup. Shared inputs and outputs from other analyses are preserved.
+`clean_models` applies the same rules to each analysis listed in `MODELS`.
 
 ## How steps depend on each other
 
@@ -1367,6 +1368,8 @@ These parameters are shared across multiple workflow steps.
 - `QC_CUTOFF`: sample-quality threshold applied during preprocessing.
 - `DET_PTYPE`: detection p-value method.
 - `DET_PTHRESHOLD`: detection p-value cutoff.
+- `NORM_METHODS`: normalisation method. Choose `adjustedfunnorm` (default),
+    `funnorm`, `illumina`, `quantile`, or `swan`.
 - `PVAL_THRESHOLD`: probe-level p-value filter applied after preprocessing.
 - `CHR_TO_REMOVE`: chromosomes to exclude from downstream matrices.
 - `SNPS_TO_REMOVE`: SNP-related probe categories to remove.
@@ -1384,6 +1387,12 @@ These parameters are shared across multiple workflow steps.
 
 These values control the main preprocessing and filtering choices in
 `preprocessingMinfiEwasWater()`.
+
+For a new analysis, `make step1 MODEL=model1 NORM_METHODS=quantile` runs
+Step 1 with quantile normalisation. To change the method for an existing
+analysis, run `make clean MODEL=model1` first, then rerun the desired target
+with `NORM_METHODS=quantile`. Use a separate analysis name if you want to
+keep the earlier results for comparison.
 
 ## Step 2 parameters
 

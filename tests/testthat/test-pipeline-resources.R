@@ -1,8 +1,14 @@
-# Load resource helpers into an isolated environment for tests.
+# Read the same R code that Make uses, without needing Make for these tests.
 pipeline_resource_helpers <- function() {
+    rules <- readLines(system.file("extdata", "make", "Makefile.rules.pipeline",
+        package = "dnaEPICO", mustWork = TRUE), warn = FALSE)
+    start <- match("define DNAEPICO_RESOURCE_CODE", rules)
+    end <- which(rules == "endef" & seq_along(rules) > start)[[1L]]
+    code <- rules[seq.int(start + 1L, end - 1L)]
+    code <- sub("[[:space:]]*\\\\$", "", code)
+    code <- gsub("$$", "$", code, fixed = TRUE)
     helpers <- new.env(parent = baseenv())
-    sys.source(system.file("extdata", "make", "pipeline-resources.R",
-        package = "dnaEPICO", mustWork = TRUE), envir = helpers)
+    eval(parse(text = code), envir = helpers)
     helpers
 }
 

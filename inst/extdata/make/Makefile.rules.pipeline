@@ -14,7 +14,105 @@ override VECLIB_MAXIMUM_THREADS := $(NATIVE_THREADS)
 override NUMEXPR_NUM_THREADS := $(NATIVE_THREADS)
 export OMP_NUM_THREADS OPENBLAS_NUM_THREADS OPENBLAS_DEFAULT_NUM_THREADS
 export MKL_NUM_THREADS VECLIB_MAXIMUM_THREADS NUMEXPR_NUM_THREADS
-DNAEPICO_RESOURCE_PLAN := $(shell "$(RSCRIPT)" -e "source(system.file('extdata','make','pipeline-resources.R',package='dnaEPICO',mustWork=TRUE)); writePipelineResourcePlan(commandArgs(TRUE))" "$(N_CORES)" "$(NATIVE_THREADS)" "$(strip $(MODELS))")
+
+# Calculate the CPU budget and the worker limit for each analysis in R.
+define DNAEPICO_RESOURCE_CODE
+pipelinePositiveInteger <- function(value, name) { \
+    number <- suppressWarnings(as.numeric(value)); \
+    if (length(number) != 1L || !is.finite(number) || number < 1 || \
+        number > .Machine[['integer.max']] || number != floor(number)) { \
+        stop(name, ' must be a positive integer.', call. = FALSE); \
+    }; \
+    as.integer(number) \
+}; \
+pbsPipelineCoresFromQstat <- function(output) { \
+    resource <- function(name) { \
+        pattern <- paste0('^[[:space:]]*Resource_List[.]', name, \
+            '[[:space:]]*=[[:space:]]*'); \
+        value <- grep(pattern, output, value = TRUE); \
+        if (length(value) != 1L) { \
+            return(NA_integer_); \
+        }; \
+        pipelinePositiveInteger(trimws(sub(pattern, '', value)), \
+            paste0('PBS Resource_List.', name)) \
+    }; \
+    nodes <- resource('nodect'); \
+    cores <- resource('ncpus'); \
+    if (!is.na(nodes) && nodes == 1L && !is.na(cores)) { \
+        return(cores); \
+    }; \
+    stop('qstat did not identify a single-node CPU allocation. ', \
+        'This workflow uses local R workers; a multi-node total is not ', \
+        'a per-node CPU limit.', call. = FALSE) \
+}; \
+pbsPipelineCores <- function() { \
+    if (!nzchar(Sys.getenv('PBS_JOBID'))) { \
+        return(Inf); \
+    }; \
+    per_node <- Sys.getenv(c('NCPUS', 'PBS_NUM_PPN'), unset = ''); \
+    per_node <- per_node[nzchar(per_node)]; \
+    if (length(per_node)) { \
+        return(min(vapply(names(per_node), function(name) { \
+            pipelinePositiveInteger(per_node[[name]], name) \
+        }, integer(1)))); \
+    }; \
+    qstat <- Sys.which('qstat'); \
+    if (nzchar(qstat)) { \
+        output <- suppressWarnings(system2(qstat, \
+            c('-f', shQuote(Sys.getenv('PBS_JOBID'))), \
+            stdout = TRUE, stderr = TRUE, timeout = 10)); \
+        status <- attr(output, 'status'); \
+        if (is.null(status) || identical(as.integer(status), 0L)) { \
+            return(pbsPipelineCoresFromQstat(output)); \
+        } \
+    }; \
+    stop('Cannot determine the PBS CPU allocation. The workflow needs ', \
+        'NCPUS/PBS_NUM_PPN from PBS or access to qstat -f for this job.', \
+        call. = FALSE) \
+}; \
+pipelineResourcePlan <- function(nCores, nativeThreads, models, \
+    availableCores = parallelly::availableCores(), \
+    allocatedCores = pbsPipelineCores()) { \
+    requested <- pipelinePositiveInteger(nCores, 'N_CORES'); \
+    threads <- pipelinePositiveInteger(nativeThreads, 'NATIVE_THREADS'); \
+    budget <- min(requested, availableCores, allocatedCores); \
+    slots <- floor(budget / threads); \
+    if (slots < 1L) { \
+        stop('NATIVE_THREADS exceeds the available CPU core limit.', \
+            call. = FALSE); \
+    }; \
+    selected <- unique(strsplit(trimws(models), '[[:space:]]+')[[1L]]); \
+    selected <- selected[nzchar(selected)]; \
+    if (any(!grepl('^[[:alnum:]][[:alnum:]_.-]*$$', selected)) || \
+        any(selected %in% c('all', '.', '..'))) { \
+        stop('MODELS must contain analysis directory names, ', \
+            'separated by spaces.', call. = FALSE); \
+    }; \
+    jobs <- min(length(selected), slots); \
+    shares <- if (!length(selected)) { \
+        integer() \
+    } else if (length(selected) > slots) { \
+        rep.int(1L, length(selected)) \
+    } else { \
+        rep.int(as.integer(slots %/% jobs), jobs) + \
+            as.integer(seq_len(jobs) <= slots %% jobs) \
+    }; \
+    list(cores = as.integer(budget), slots = as.integer(slots), \
+        jobs = max(1L, as.integer(jobs)), \
+        workers = stats::setNames(shares, selected)) \
+}; \
+writePipelineResourcePlan <- function(args) { \
+    if (length(args) != 3L) { \
+        stop('Expected N_CORES, NATIVE_THREADS and MODELS.', call. = FALSE); \
+    }; \
+    plan <- pipelineResourcePlan(args[[1L]], args[[2L]], args[[3L]]); \
+    workers <- plan[['workers']]; \
+    cat(c(plan[['cores']], plan[['slots']], plan[['jobs']], \
+        paste(names(workers), workers, sep = '=')), sep = ' ') \
+}
+endef
+
+DNAEPICO_RESOURCE_PLAN := $(shell "$(RSCRIPT)" -e "$(DNAEPICO_RESOURCE_CODE); writePipelineResourcePlan(commandArgs(TRUE))" "$(N_CORES)" "$(NATIVE_THREADS)" "$(strip $(MODELS))")
 ifeq ($(strip $(DNAEPICO_RESOURCE_PLAN)),)
 $(error Could not determine the CPU core limit for dnaEPICO. See the R error above)
 endif
@@ -33,6 +131,8 @@ ifneq ($(DNAEPICO_MODEL_DISPATCH),1)
 endif
 
 METHYLATION_SCALE ?= beta
+NORM_METHODS ?= adjustedfunnorm
+export NORM_METHODS
 GENCODE_HUB ?= FALSE
 optional_text_arg = $(if $(filter NULL null,$(strip $(1))),NULL,$(if $(strip $(1)),'$(strip $(1))',NULL))
 MODEL_CONFIG_ERROR = The dnaEPICO Makefile configuration has changed. Please update your Makefile.
@@ -257,6 +357,7 @@ $(STEP1_PRIMARY): $(PHENO_FILE)
 	  qcCutoff = $(QC_CUTOFF), \
 	  detPtype = '$(DET_PTYPE)', \
 	  detPThreshold = $(DET_PTHRESHOLD), \
+	  normMethods = Sys.getenv('NORM_METHODS'), \
 	  sexColumn = '$(SEX_COLUMN)', \
 	  removeSexMismatch = $(REMOVE_SEX_MISMATCH), \
 	  pvalThreshold = $(PVAL_THRESHOLD), \
@@ -504,6 +605,89 @@ report-f3 report-f4 report-f3lme report-all:
 # =================================================================================================================================
 # Remove outputs
 # =================================================================================================================================
+define DNAEPICO_CLEAN_CODE
+clean_outputs <- function(args) { \
+    model <- trimws(args[[1L]]); \
+    if (!nzchar(model) || model %in% c('.', '..', 'all') || \
+        grepl('/', model, fixed = TRUE) || \
+        grepl(intToUtf8(92L), model, fixed = TRUE) || basename(model) != model) { \
+        stop('MODEL must be a single safe directory name.', call. = FALSE); \
+    }; \
+    roots <- stats::setNames(args[3:8], \
+        c('data', 'rData', 'reports', 'logs', 'figures', 'results')); \
+    output_exists <- function(paths) { \
+        links <- Sys.readlink(paths); \
+        file.exists(paths) | (!is.na(links) & nzchar(links)) \
+    }; \
+    targets <- file.path(roots, model); \
+    present <- output_exists(targets); \
+    newline <- intToUtf8(10L); \
+    if (!any(present)) { \
+        cat('No package outputs were present for: ', model, newline, sep = ''); \
+        return(invisible(NULL)); \
+    }; \
+    roots <- roots[present]; \
+    targets <- targets[present]; \
+    canonical <- function(paths) { \
+        normalizePath(paths, winslash = '/', mustWork = TRUE) \
+    }; \
+    comparable <- function(paths) { \
+        paths <- sub('/+$$', '', paths); \
+        if (.Platform[['OS.type']] == 'windows') tolower(paths) else paths \
+    }; \
+    inside <- function(paths, parent) startsWith(paths, paste0(parent, '/')); \
+    workspace <- comparable(canonical(args[[2L]])); \
+    resolved_roots <- canonical(roots); \
+    root_paths <- comparable(resolved_roots); \
+    if (!all(inside(root_paths, workspace)) || anyDuplicated(root_paths)) { \
+        stop('Cleanup output roots must be distinct directories inside the ', \
+            'Make workspace: ', paste(roots, collapse = ', '), call. = FALSE); \
+    }; \
+    if (!all(dir.exists(targets))) { \
+        stop('Cleanup expected an analysis directory at: ', \
+            paste(targets[!dir.exists(targets)], collapse = ', '), \
+            call. = FALSE); \
+    }; \
+    resolved_targets <- canonical(targets); \
+    target_paths <- comparable(resolved_targets); \
+    if (any(target_paths != comparable(file.path(resolved_roots, model)))) { \
+        stop('Cleanup targets must resolve to their own analysis directories.', \
+            call. = FALSE); \
+    }; \
+    inputs <- c(file.path(args[[3L]], args[[9L]]), args[[10L]]); \
+    for (input in comparable(canonical(inputs[file.exists(inputs)]))) { \
+        if (any(target_paths == input | inside(target_paths, input) | \
+                inside(input, target_paths))) { \
+            stop('Cleanup target overlaps a shared input: ', input, \
+                call. = FALSE); \
+        } \
+    }; \
+    status <- unlink(resolved_targets, recursive = TRUE, force = TRUE, \
+        expand = FALSE); \
+    remaining <- targets[output_exists(targets)]; \
+    if (status != 0L || length(remaining)) { \
+        stop('Cleanup incomplete. Check for open files or a running analysis. ', \
+            'Paths remaining: ', paste(remaining, collapse = ', '), \
+            call. = FALSE); \
+    }; \
+    separator <- paste0(newline, '  - '); \
+    cat('Removed package outputs:', separator, \
+        paste(targets, collapse = separator), newline, sep = ''); \
+    for (root in resolved_roots[names(roots) != 'data']) { \
+        if (dir.exists(root) && file.access(root, 4L) == 0L && \
+            !length(list.files(root, all.files = TRUE, no.. = TRUE))) { \
+            status <- unlink(root, recursive = TRUE, expand = FALSE); \
+            if (status != 0L || dir.exists(root)) { \
+                stop('Could not remove empty output root: ', root, \
+                    call. = FALSE); \
+            } \
+        } \
+    }; \
+    invisible(NULL) \
+}; \
+clean_outputs(commandArgs(TRUE))
+endef
+
 clean_models:
 	@echo "===== Cleaning all models ====="
 	@"$(RSCRIPT)" -e "models <- trimws(commandArgs(trailingOnly = TRUE)[[1L]]); if (!nzchar(models)) stop('MODELS must contain at least one model directory name.', call. = FALSE)" "$(MODELS)"
@@ -519,7 +703,9 @@ ifeq ($(MODEL),all)
 	@$(MAKE) -j1 clean_models
 else
 	@echo "Cleaning outputs for: $(MODEL)"
-	@"$(RSCRIPT)" -e "args <- commandArgs(trailingOnly = TRUE); model <- trimws(args[[1L]]); backslash <- intToUtf8(92L); if (!nzchar(model) || model %in% c('.', '..', 'all') || grepl('/', model, fixed = TRUE) || grepl(backslash, model, fixed = TRUE) || basename(model) != model) stop('MODEL must be a single safe directory name.', call. = FALSE); workspace <- normalizePath(args[[2L]], winslash = '/', mustWork = TRUE); roots <- stats::setNames(args[3:8], c('data', 'rData', 'reports', 'logs', 'figures', 'results')); roots <- vapply(roots, normalizePath, character(1), winslash = '/', mustWork = FALSE); compare_path <- function(path) if (identical(getElement(.Platform, 'OS.type'), 'windows')) tolower(path) else path; trim_path <- function(path) { while (nchar(path) > 1L && endsWith(path, '/')) path <- substr(path, 1L, nchar(path) - 1L); path }; workspace_compare <- trim_path(compare_path(workspace)); root_compare <- vapply(compare_path(roots), trim_path, character(1)); inside <- startsWith(root_compare, paste0(workspace_compare, '/')) & root_compare != workspace_compare; if (!all(inside)) stop('Cleanup output roots must be distinct directories inside the Make workspace: ', paste(names(roots)[!inside], collapse = ', '), call. = FALSE); if (anyDuplicated(root_compare)) stop('Cleanup output roots must resolve to distinct directories.', call. = FALSE); targets <- unique(file.path(roots, model)); existing <- targets[file.exists(targets)]; statuses <- vapply(targets, unlink, integer(1), recursive = TRUE, force = TRUE); remaining <- targets[file.exists(targets)]; if (any(statuses != 0L) || length(remaining)) stop('Cleanup incomplete. Close open output files and ensure no pipeline is running. Paths not removed:\n  - ', paste(remaining, collapse = '\n  - '), call. = FALSE); pruned <- character(); for (root in roots[names(roots) != 'data']) if (dir.exists(root) && !length(list.files(root, all.files = TRUE, no.. = TRUE))) { root_status <- unlink(root, recursive = TRUE, force = TRUE); if (root_status != 0L || dir.exists(root)) stop('Could not remove empty output root: ', root, call. = FALSE); pruned <- c(pruned, root) }; if (length(existing)) cat('Removed package outputs:\n  - ', paste(existing, collapse = '\n  - '), '\n', sep = '') else cat('No package outputs were present for: ', model, '\n', sep = ''); if (length(pruned)) cat('Removed empty output roots:\n  - ', paste(pruned, collapse = '\n  - '), '\n', sep = ''); cat('Preserved user input root: ', roots[['data']], '\n', sep = '')" "$(MODEL)" "$(CURDIR)" "$(DATA_DIR)" "$(RDATA_DIR)" "$(STEP6)" "$(LOGS_DIR)" "$(FIGURES_DIR)" "$(RESULTS_DIR)"
+	@"$(RSCRIPT)" -e "$(DNAEPICO_CLEAN_CODE)" \
+	  "$(MODEL)" "$(CURDIR)" "$(DATA_DIR)" "$(RDATA_DIR)" "$(STEP6)" "$(LOGS_DIR)" \
+	  "$(FIGURES_DIR)" "$(RESULTS_DIR)" "$(STEP1)" "$(PHENO_FILE)"
 	@echo "Cleanup completed for: $(MODEL)"
 endif
 

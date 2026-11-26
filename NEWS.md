@@ -1,3 +1,9 @@
+CHANGES IN VERSION 1.1.1
+------------------------
+
+    o [26-11-2026] Set NORM_METHODS in Make to choose the Step 1
+      normalisation method.
+
 CHANGES IN VERSION 0.99.40
 --------------------------
 

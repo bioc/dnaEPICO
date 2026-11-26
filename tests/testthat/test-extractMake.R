@@ -331,9 +331,6 @@ test_that("extractMake copies the packaged Makefile and returns its path", {
     expect_true(any(grepl("commandArgs(trailingOnly = TRUE)", rules,
         fixed = TRUE
     )))
-    expect_true(any(grepl("statuses <- vapply(targets, unlink", rules,
-        fixed = TRUE
-    )))
     expect_false(any(grepl("$(abspath $(LOGS_DIR)", rules, fixed = TRUE)))
     expect_false(any(grepl("test -e", rules, fixed = TRUE)))
     expect_false(any(grepl("mkdir -p", rules, fixed = TRUE)))
@@ -341,6 +338,97 @@ test_that("extractMake copies the packaged Makefile and returns its path", {
     expect_false(any(grepl("/dev/null", rules, fixed = TRUE)))
     expect_false(any(grepl("for m in", rules, fixed = TRUE)))
     expect_false(any(grepl("$(eval run", rules, fixed = TRUE)))
+})
+
+test_that("Step 1 passes the default and the selected normalisation method", {
+    make_command <- unname(Sys.which("make"))
+    skip_if(!nzchar(make_command), "GNU Make is not available")
+    project <- withr::local_tempdir(pattern = "dnaEPICO normalisation ")
+    makefile <- extractMake(project)
+    # Exercise the fallback in the shared rules using the test Makefile.
+    settings <- readLines(makefile, warn = FALSE)
+    writeLines(settings[!grepl("^NORM_METHODS[[:space:]]*=", settings)], makefile)
+    withr::local_dir(project)
+
+    input <- file.path("data", "preprocessingMinfiEwasWater", "pheno.csv")
+    dir.create(dirname(input), recursive = TRUE)
+    writeLines("sample", input)
+    # Record the argument passed by the real recipe without processing IDATs.
+    profile <- file.path(project, "test-profile.R")
+    writeLines(c(
+        "preprocessingMinfiEwasWater <- function(normMethods, baseDataFolder,",
+        "    scriptLabel, ...) {",
+        "    path <- file.path(baseDataFolder, scriptLabel, 'objects',",
+        "        'RGSet.RData')",
+        "    dir.create(dirname(path), recursive = TRUE)",
+        "    writeLines(normMethods, path)",
+        "}"
+    ), profile)
+    withr::local_envvar(c(R_PROFILE_USER = profile, NORM_METHODS = NA_character_,
+        R_LIBS = paste(.libPaths(), collapse = .Platform$path.sep)))
+
+    for (method in c("adjustedfunnorm", "quantile")) {
+        target <- file.path("rData", method, "preprocessingMinfiEwasWater",
+            "objects", "RGSet.RData")
+        selection <- if (method == "quantile") "NORM_METHODS=quantile"
+        output <- suppressWarnings(system2(make_command,
+            c("--no-print-directory", target, paste0("MODEL=", method),
+                selection), stdout = TRUE, stderr = TRUE))
+        expect_null(attr(output, "status"), info = paste(output, collapse = "\n"))
+        expect_true(file.exists(target))
+        if (file.exists(target)) expect_identical(readLines(target), method)
+    }
+})
+
+test_that("Make cleans existing outputs from partial and grouped runs", {
+    make_command <- unname(Sys.which("make"))
+    skip_if(!nzchar(make_command), "GNU Make is not available")
+    workspace <- withr::local_tempdir(pattern = "dnaEPICO cleanup ")
+    project <- file.path(workspace, "project")
+    dir.create(project)
+    extractMake(project)
+    withr::local_dir(project)
+    withr::local_envvar(MAKE = make_command)
+
+    fixture <- function(paths) {
+        for (path in paths) {
+            dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+            writeLines("test", path)
+        }
+    }
+    run_make <- function(...) suppressWarnings(system2(make_command,
+        c("--no-print-directory", ...), stdout = TRUE, stderr = TRUE))
+    partial <- c("data/longBRA/svaEnmix/.sva_complete", "rData/longBRA/RGSet",
+        "figures/longBRA/qc.png", "logs/longBRA/run.txt")
+    shared <- "data/preprocessingMinfiEwasWater/pheno.csv"
+    other <- "rData/other/keep.txt"
+    fixture(c(partial, shared, other))
+
+    output <- run_make("clean", "MODEL=longBRA")
+    expect_null(attr(output, "status"), info = paste(output, collapse = "\n"))
+    expect_false(any(file.exists(partial)))
+    expect_false(any(dir.exists(c("reports", "results"))))
+    expect_true(all(file.exists(c(shared, other))))
+
+    complete <- c("reports/followup/docs/index.html", "results/followup/fit.txt")
+    fixture(c(partial, complete))
+    for (attempt in seq_len(2L)) {
+        output <- run_make("clean_models", shQuote("MODELS=longBRA followup"))
+        expect_null(attr(output, "status"), info = paste(output, collapse = "\n"))
+        expect_false(any(file.exists(c(partial, complete))))
+        expect_true(all(file.exists(c(shared, other))))
+    }
+
+    external <- file.path(workspace, "external", "longBRA", "keep.txt")
+    fixture(c(partial, external))
+    output <- run_make("clean", "MODEL=longBRA",
+        shQuote(paste0("RESULTS_DIR=", file.path(workspace, "external"))))
+    expect_true(any(grepl("inside the Make workspace", output, fixed = TRUE)))
+    expect_true(all(file.exists(c(partial, external))))
+
+    output <- run_make("clean", "MODEL=preprocessingMinfiEwasWater")
+    expect_true(any(grepl("overlaps a shared input", output, fixed = TRUE)))
+    expect_true(file.exists(shared))
 })
 
 test_that("model-specific Make configuration validation is explicit", {
