@@ -354,7 +354,6 @@ test_that("Step 1 passes the default and the selected normalisation method", {
     dir.create(dirname(input), recursive = TRUE)
     writeLines("sample", input)
     # Record the argument passed by the real recipe without processing IDATs.
-    profile <- file.path(project, "test-profile.R")
     writeLines(c(
         "preprocessingMinfiEwasWater <- function(normMethods, baseDataFolder,",
         "    scriptLabel, ...) {",
@@ -363,8 +362,17 @@ test_that("Step 1 passes the default and the selected normalisation method", {
         "    dir.create(dirname(path), recursive = TRUE)",
         "    writeLines(normMethods, path)",
         "}"
-    ), profile)
-    withr::local_envvar(c(R_PROFILE_USER = profile, NORM_METHODS = NA_character_,
+    ), "test-preprocessing.R")
+    rules <- readLines(system.file("extdata", "make", "Makefile.rules.pipeline",
+        package = "dnaEPICO", mustWork = TRUE), warn = FALSE)
+    rules <- sub(
+        "invisible(preprocessingMinfiEwasWater(",
+        paste0("source('test-preprocessing.R'); ",
+            "invisible(preprocessingMinfiEwasWater("),
+        rules, fixed = TRUE
+    )
+    writeLines(rules, "test-rules.mk")
+    withr::local_envvar(c(NORM_METHODS = NA_character_,
         R_LIBS = paste(.libPaths(), collapse = .Platform$path.sep)))
 
     for (method in c("adjustedfunnorm", "quantile")) {
@@ -372,8 +380,9 @@ test_that("Step 1 passes the default and the selected normalisation method", {
             "objects", "RGSet.RData")
         selection <- if (method == "quantile") "NORM_METHODS=quantile"
         output <- suppressWarnings(system2(make_command,
-            c("--no-print-directory", target, paste0("MODEL=", method),
-                selection), stdout = TRUE, stderr = TRUE))
+            c("--no-print-directory", "DNAPIPE_MK_RAW=test-rules.mk",
+                target, paste0("MODEL=", method), selection),
+            stdout = TRUE, stderr = TRUE))
         expect_null(attr(output, "status"), info = paste(output, collapse = "\n"))
         expect_true(file.exists(target))
         if (file.exists(target)) expect_identical(readLines(target), method)
