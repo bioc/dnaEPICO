@@ -314,6 +314,30 @@ test_that("prepareDnamReportInputs returns a structured inventory quietly", {
     expect_match(result$outputFile, "docs/index\\.html$")
 })
 
+test_that("report logs display code fences and HTML as literal text", {
+    project <- withr::local_tempdir()
+    asset <- list(exists = TRUE, asset_path = "analysis.log")
+    path <- file.path(project, asset$asset_path)
+    code_fence <- paste0(strrep(intToUtf8(96L), 3L), "{r}")
+    writeLines(c(code_fence, "<sample> & result", "~~~~"), path)
+
+    render_block <- function() {
+        paste(dnaEPICO:::.reportLogBlockDnaEpico(asset, "Batch Effect", project),
+            collapse = "\n")
+    }
+    output <- render_block()
+    expect_false(grepl(code_fence, output, fixed = TRUE))
+    expect_match(output, "&#96;&#96;&#96;{r}", fixed = TRUE)
+    expect_match(output, "&lt;sample&gt; &amp; result", fixed = TRUE)
+    expect_match(output, "&#126;&#126;&#126;&#126;", fixed = TRUE)
+
+    asset$exists <- FALSE
+    expect_match(render_block(), "Log file not found", fixed = TRUE)
+    asset$exists <- TRUE
+    writeLines(character(), path)
+    expect_match(render_block(), "is empty.", fixed = TRUE)
+})
+
 test_that("dnamReport renders the dashboard and writes logs on request", {
     tmp <- withr::local_tempdir()
     example_dirs <- create_dnam_report_example(tmp)
@@ -644,9 +668,11 @@ test_that("dnamReport renders the dashboard and writes logs on request", {
         fixed = TRUE
     )))
     expect_true(any(grepl('::: {.card title="GLM Analysis"}', logs_qmd, fixed = TRUE)))
-    expect_true(any(grepl("methylationGLM.txt", logs_qmd, fixed = TRUE)))
+    expect_true(any(grepl("Log file not found for `GLM Analysis`.", logs_qmd,
+        fixed = TRUE)))
     expect_true(any(grepl('::: {.card title="LME Analysis"}', logs_qmd, fixed = TRUE)))
-    expect_true(any(grepl("methylationLME.txt", logs_qmd, fixed = TRUE)))
+    expect_true(any(grepl("Log file not found for `LME Analysis`.", logs_qmd,
+        fixed = TRUE)))
 
     report_qmd <- readLines(file.path(result$projectDir, "report.qmd"), warn = FALSE)
     expect_true(any(grepl("format:", report_qmd, fixed = TRUE)))

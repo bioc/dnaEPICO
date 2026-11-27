@@ -1185,12 +1185,21 @@ inputs are unchanged.
 
 ## Report generation
 
-The exported Makefile contains a report rule whose output is
-`$(STEP6)/$(MODEL)/docs/index.html`. With the default directory settings, this
-becomes `reports/<model>/docs/index.html`. Users usually do not need to call
-that file target directly: the grouped targets above depend on it, so Make
-refreshes the report automatically after the required pipeline outputs are
-available.
+The grouped Make targets render a report after the required pipeline outputs
+are available. With the default directory settings, open
+`reports/<model>/docs/index.html`.
+
+Report preparation and Quarto's progress are recorded in
+`logs/<model>/log_dnamReport.txt`. On Linux or macOS, follow the log while the
+report renders:
+
+```bash
+tail -f logs/model1/log_dnamReport.txt
+```
+
+Quarto has 30 minutes to render each report. If a preprocessing report fails,
+check the log and retry with `make report-f3 MODEL=model1`. Make reuses
+preprocessing outputs that are up to date.
 
 For example, the `f3` route builds the report from the Data, Quality Control,
 Batch Effect, Metrics, Report, and Logs inputs; Quality Control contains both

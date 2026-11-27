@@ -354,12 +354,6 @@ renderDnamReport <- function(
     text
 }
 
-.rStringDnamReport <- function(text) {
-    text <- gsub("\\\\", "\\\\\\\\", text)
-    text <- gsub("\"", "\\\"", text, fixed = TRUE)
-    paste0("\"", text, "\"")
-}
-
 .slugifyDnamReport <- function(text) {
     text <- tools::file_path_sans_ext(basename(text))
     text <- tolower(text)
@@ -4111,7 +4105,6 @@ renderDnamReport <- function(
     write_utf8 <- .writeUtf8DnamReport
     find_quarto <- .findQuartoDnamReport
     html_escape <- .htmlEscapeDnamReport
-    r_string <- .rStringDnamReport
     slugify <- .slugifyDnamReport
     pretty_label <- .prettyLabelDnamReport
     callout_lines <- .calloutLinesDnamReport
@@ -4642,6 +4635,25 @@ renderDnamReport <- function(
             "log_methylationLME.txt"), "methylationLME.txt")
     }
     log_assets
+}
+
+.reportLogBlockDnaEpico <- function(asset, label, projectDir) {
+    if (!isTRUE(asset$exists)) {
+        return(.calloutLinesDnamReport(
+            sprintf("Log file not found for `%s`.", label), type = "warning"
+        ))
+    }
+
+    lines <- readLines(file.path(projectDir, asset$asset_path), warn = FALSE,
+        encoding = "UTF-8")
+    if (!length(lines)) {
+        return(.calloutLinesDnamReport(sprintf("`%s` is empty.", label)))
+    }
+
+    text <- .htmlEscapeDnamReport(paste(lines, collapse = "\n"))
+    text <- gsub("`", "&#96;", text, fixed = TRUE)
+    text <- gsub("~", "&#126;", text, fixed = TRUE)
+    c("~~~{=html}", paste0("<pre><code>", text, "</code></pre>"), "~~~")
 }
 
 .drg_summaries_01DnaEpico <- function() {
@@ -5292,19 +5304,6 @@ renderDnamReport <- function(
     lme_visualisations_page <- compose_page(title = "LME Visualisations",
         body_lines = build_model_visualisation_tabs(lme_items,
         lme_venn_items, "LME"))
-    log_render_helper <- c("```{r}", "#| echo: false", "#| include: false",
-        "render_log_block <- function(path, label) {",
-        "  if (!file.exists(path)) {", "    cat('::: {.callout-warning}\\n')",
-        "    cat(sprintf('Log file not found for `%s`.\\n', label))",
-            "    cat(':::\\n')",
-        "    return(invisible(NULL))", "  }",
-            "  lines <- readLines(path, warn = FALSE, encoding = 'UTF-8')",
-        "  if (!length(lines)) {", "    cat('::: {.callout-note}\\n')",
-            "    cat(sprintf('`%s` is empty.\\n', label))",
-        "    cat(':::\\n')", "    return(invisible(NULL))", "  }",
-            "  cat('```text\\n')",
-        "  cat(paste(lines, collapse = '\\n'))", "  cat('\\n```\\n')", "}",
-            "```")
     environment()
 }
 
@@ -5315,24 +5314,21 @@ renderDnamReport <- function(
             "IDAT loading, normalisation, filtering, and cell-",
             "composition estimation."), log_status_note(
             "Methylation Analysis"))),
-        "", "```{r}", "#| echo: false", "#| results: asis", sprintf(
-            "render_log_block(%s, 'Methylation Analysis')",
-            r_string(log_assets$methylation$asset_path)), "```", ":::", "",
+        "", .reportLogBlockDnaEpico(log_assets$methylation,
+            "Methylation Analysis", project_dir), "", ":::", "",
             "::: {.card title=\"Data Preparation\"}",
         "", content_note_block(c(paste0(
             "Phenotype preparation, timepoint splitting, and ",
             "methylation-matrix export."), log_status_note(
             "Data Preparation"))),
-        "", "```{r}", "#| echo: false", "#| results: asis", sprintf(
-            "render_log_block(%s, 'Data Preparation')",
-            r_string(log_assets$data$asset_path)), "```", ":::", "",
+        "", .reportLogBlockDnaEpico(log_assets$data,
+            "Data Preparation", project_dir), "", ":::", "",
             "::: {.card title=\"Batch Effect\"}",
         "", content_note_block(c(
             "Surrogate-variable analysis for batch-effect assessment.",
-            log_status_note("Batch Effect"))), "", "```{r}", "#| echo: false",
-        "#| results: asis", sprintf("render_log_block(%s, 'Batch Effect')",
-            r_string(log_assets$batch$asset_path)),
-        "```", ":::")
+            log_status_note("Batch Effect"))), "",
+        .reportLogBlockDnaEpico(log_assets$batch, "Batch Effect", project_dir),
+        "", ":::")
     .dnamReportFunctionResult <- environment()
     environment()
 }
@@ -5357,10 +5353,8 @@ renderDnamReport <- function(
             "Generalised linear model fitting, association ",
                 "testing, and CpG annotation."),
                 log_status_note("GLM Analysis"))),
-            "", "```{r}", "#| echo: false", "#| results: asis",
-            sprintf("render_log_block(%s, 'GLM Analysis')",
-                r_string(log_assets$glm$asset_path)),
-            "```", ":::")
+            "", .reportLogBlockDnaEpico(log_assets$glm, "GLM Analysis",
+                project_dir), "", ":::")
     } else { character(0) }
     lme_log_card <- if (include_lme) {
         c("", sprintf("::: {.card title=\"%s\"}",
@@ -5374,16 +5368,12 @@ renderDnamReport <- function(
                 paste0("Linear mixed-effects model fitting, phenotype ",
                     "coefficient testing, and CpG annotation.")
             }, log_status_note(lme_analysis_label))),
-            "", "```{r}", "#| echo: false", "#| results: asis",
-            sprintf("render_log_block(%s, %s)", r_string(
-            log_assets$lme$asset_path),
-                r_string(lme_analysis_label)), "```",
-            ":::")
+            "", .reportLogBlockDnaEpico(log_assets$lme, lme_analysis_label,
+                project_dir), "", ":::")
     } else {
         character(0) }
     logs_page <- compose_page(title = "Logs", body_classes = "qpasst-logs-page",
-        body_lines = c(log_render_helper, base_log_cards,
-            glm_log_card, lme_log_card))
+        body_lines = c(base_log_cards, glm_log_card, lme_log_card))
     report_page <- build_report_page(project_name = project_name,
         project_dir = project_dir, data_notes = data_notes,
         enmix_notes = enmix_notes, quality_control_notes =
@@ -5454,15 +5444,6 @@ renderDnamReport <- function(
     environment()
 }
 
-.quartoRenderFilesDnaEpico <- function(paths) {
-    unlist(lapply(paths, function(path) {
-    if (!file.exists(path)) {
-        return(character())
-    }
-    readLines(path, warn = FALSE, encoding = "UTF-8")
-    }), use.names = FALSE)
-}
-
 .quartoRenderStateDnaEpico <- function(
     status, renderedFile, projectDir, verbose, logPath
 ) {
@@ -5489,29 +5470,34 @@ renderDnamReport <- function(
 }
 
 .runQuartoReportDnaEpico <- function(
-    quartoBin, projectDir, renderedFile, verbose, logPath
+    quartoBin, projectDir, renderedFile, verbose, logPath, timeout = 30 * 60
 ) {
     emitLogMinfiEwasWater(
-    c("Rendering report site..."),
-    verbose = FALSE, log_path = logPath
+        c("Rendering report site...",
+            sprintf("Quarto render time limit: %s seconds.", timeout)),
+        verbose = verbose, log_path = logPath
     )
-    old_directory <- getwd()
-    on.exit(setwd(old_directory), add = TRUE)
-    setwd(projectDir)
-    stdout <- tempfile("dnaEPICO-quarto-stdout-", fileext = ".log")
-    stderr <- tempfile("dnaEPICO-quarto-stderr-", fileext = ".log")
-    on.exit(unlink(c(stdout, stderr)), add = TRUE)
-    status <- system2(quartoBin, "render", stdout = stdout, stderr = stderr)
-    output <- .quartoRenderFilesDnaEpico(c(stdout, stderr))
-    if (length(output)) {
-    emitLogMinfiEwasWater(
-        c("Quarto output:", output),
-        verbose = FALSE, log_path = logPath
-    )
+    append_output <- function(line, process) {
+        line <- gsub("\033\\[[0-9;]*m|\r", "", line)
+        emitLogMinfiEwasWater(line, verbose = verbose, log_path = logPath)
     }
-    .quartoRenderStateDnaEpico(
-    status, renderedFile, projectDir, verbose, logPath
+    result <- tryCatch(
+        processx::run(quartoBin, "render", wd = projectDir,
+            stderr_to_stdout = TRUE, stdout_line_callback = append_output,
+            timeout = timeout, error_on_status = FALSE, cleanup_tree = TRUE),
+        error = identity
     )
+    if (inherits(result, "error")) {
+        error <- paste("Could not run Quarto:", conditionMessage(result))
+    } else if (isTRUE(result$timeout)) {
+        error <- sprintf("Quarto render timed out after %s seconds.", timeout)
+    } else {
+        return(.quartoRenderStateDnaEpico(
+            result$status, renderedFile, projectDir, verbose, logPath
+        ))
+    }
+    emitLogMinfiEwasWater(error, verbose = verbose, log_path = logPath)
+    list(status = "failed", error = error)
 }
 
 .missingQuartoReportStateDnaEpico <- function(projectDir, verbose, logPath) {
